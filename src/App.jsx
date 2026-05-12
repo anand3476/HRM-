@@ -1,6 +1,16 @@
 import React, { useState, useEffect, useRef, useLayoutEffect, useCallback } from 'react';
 import { Network, BookOpen, Search, Play, ExternalLink, ChevronDown, ChevronRight, BookMarked, GraduationCap, ChevronUp, Edit3, Save, X, ZoomIn, ZoomOut, Maximize, Lock, Unlock, KeyRound } from 'lucide-react';
 
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, doc, setDoc, onSnapshot } from 'firebase/firestore';
+
+const firebaseConfig = JSON.parse(__firebase_config);
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
 // --- DATA STRUCTURE ---
 const initialHrmData = [
   {
@@ -792,29 +802,48 @@ const ObsidianGraphView = ({ data, onUpdateAnswer, isAdmin, onRequestLogin }) =>
 export default function App() {
   const [activeTab, setActiveTab] = useState('read'); // Default to read notes view
   
-  const [data, setData] = useState(() => {
-    const savedData = localStorage.getItem('hrmPrepNotes');
-    if (savedData) {
-      try {
-        return JSON.parse(savedData);
-      } catch (e) {
-        console.error("Error loading saved notes", e);
-      }
-    }
-    // Deep clone initial data so we never accidentally mutate the global constant
-    return JSON.parse(JSON.stringify(initialHrmData));
-  });
+  const [data, setData] = useState(() => JSON.parse(JSON.stringify(initialHrmData)));
+  const [user, setUser] = useState(null);
 
   const [isAdmin, setIsAdmin] = useState(false);
   const [showLoginModal, setShowLoginModal] = useState(false);
 
+  // 1. Initialize Secure Authentication
   useEffect(() => {
-    localStorage.setItem('hrmPrepNotes', JSON.stringify(data));
-  }, [data]);
+    const initAuth = async () => {
+      if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+        await signInWithCustomToken(auth, __initial_auth_token);
+      } else {
+        await signInAnonymously(auth);
+      }
+    };
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, setUser);
+    return () => unsubscribe();
+  }, []);
+
+  // 2. Real-time Cloud Sync Listener
+  useEffect(() => {
+    if (!user) return; // Wait until secure auth is complete
+    
+    // Connects to a private, user-specific cloud folder for this exact app
+    const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'notes', 'main');
+    
+    // onSnapshot automatically downloads the latest notes whenever they change
+    const unsubscribe = onSnapshot(docRef, (docSnap) => {
+      if (docSnap.exists()) {
+        setData(docSnap.data().hrmData);
+      }
+    }, (error) => {
+      console.error("Cloud sync error:", error);
+    });
+    
+    return () => unsubscribe();
+  }, [user]);
 
   const handleUpdateAnswer = (uIdx, sIdx, qIdx, fullAnswer) => {
     setData(prevData => {
-      // Create a strict deep copy of the path down to the specific question
+      // Create a strict deep copy
       const newData = [...prevData];
       const newUnit = { ...newData[uIdx] };
       const newSubtopics = [...newUnit.subtopics];
@@ -832,6 +861,12 @@ export default function App() {
       newSubtopics[sIdx] = newSub;
       newUnit.subtopics = newSubtopics;
       newData[uIdx] = newUnit;
+      
+      // Instantly beam the new data up to the secure cloud!
+      if (user) {
+        const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'notes', 'main');
+        setDoc(docRef, { hrmData: newData }).catch(err => console.error("Error saving to cloud:", err));
+      }
       
       return newData;
     });
