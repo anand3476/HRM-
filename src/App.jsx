@@ -5,13 +5,21 @@ import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, doc, setDoc, onSnapshot } from 'firebase/firestore';
 
-const firebaseConfig = JSON.parse(__firebase_config);
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+// Safely initialize Firebase so it NEVER crashes the app if the environment is missing variables
+let app, auth, db;
+try {
+  if (typeof __firebase_config !== 'undefined') {
+    const firebaseConfig = typeof __firebase_config === 'string' ? JSON.parse(__firebase_config) : __firebase_config;
+    app = initializeApp(firebaseConfig);
+    auth = getAuth(app);
+    db = getFirestore(app);
+  }
+} catch (error) {
+  console.warn("Cloud features unavailable, running in local mode.", error);
+}
 
-// --- DATA STRUCTURE ---
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'hrm-master-prep';
+
 const initialHrmData = [
   {
     unit: "Unit I: Introduction",
@@ -175,6 +183,7 @@ const initialHrmData = [
   }
 ];
 
+
 const LoginModal = ({ isOpen, onClose, onSuccess }) => {
   const [pwd, setPwd] = useState('');
   const [error, setError] = useState('');
@@ -266,9 +275,9 @@ const MarkdownDisplay = ({ content }) => {
   const getHtml = () => {
     if (!content) return { __html: '' };
     let html = content
-      // 1. Escape HTML to prevent XSS and malformed tags
+      // 1. Escape HTML
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      // 2. Code blocks (multiline)
+      // 2. Code blocks
       .replace(/```([\s\S]*?)```/gim, '<pre class="bg-gray-900 text-gray-100 p-3 rounded-md my-3 overflow-x-auto text-xs font-mono border border-gray-700 shadow-inner"><code>$1</code></pre>')
       // 3. Headings
       .replace(/^### (.*$)/gim, '<h3 class="text-lg font-bold text-gray-900 mt-4 mb-2">$1</h3>')
@@ -299,13 +308,11 @@ const MarkdownDisplay = ({ content }) => {
   );
 };
 
-// Reusable component for editing/viewing a single question
 const QuestionContent = ({ q, unitIdx, subIdx, qIdx, onUpdate, isExpandedInit = false, isAdmin, onRequestLogin }) => {
   const [isExpanded, setIsExpanded] = useState(isExpandedInit);
   const [isEditing, setIsEditing] = useState(false);
   const [text, setText] = useState(q.fullAnswer || "");
 
-  // Update local state if the prop changes (e.g. switching nodes in graph view)
   useEffect(() => {
     setText(q.fullAnswer || "");
   }, [q.fullAnswer]);
@@ -341,7 +348,7 @@ const QuestionContent = ({ q, unitIdx, subIdx, qIdx, onUpdate, isExpandedInit = 
              <div className="space-y-2">
                <textarea
                  className="w-full text-sm p-3 border border-indigo-300 rounded-md focus:ring-2 focus:ring-indigo-500 focus:outline-none min-h-[160px] bg-white shadow-inner"
-                 placeholder="Paste your detailed answer, notes, or links here..."
+                 placeholder="Paste your detailed answer, markdown notes, or links here..."
                  value={text}
                  onChange={(e) => setText(e.target.value)}
                  autoFocus
@@ -379,7 +386,6 @@ const QuestionContent = ({ q, unitIdx, subIdx, qIdx, onUpdate, isExpandedInit = 
   );
 };
 
-// --- READ VIEW ---
 const ReadView = ({ data, onUpdateAnswer, isAdmin, onRequestLogin }) => {
   const [openUnit, setOpenUnit] = useState(0);
 
@@ -420,33 +426,27 @@ const ReadView = ({ data, onUpdateAnswer, isAdmin, onRequestLogin }) => {
   );
 };
 
-// --- OBSIDIAN GRAPH VIEW ---
 const ObsidianGraphView = ({ data, onUpdateAnswer, isAdmin, onRequestLogin }) => {
   const containerRef = useRef(null);
   const animationRef = useRef(null);
   
-  // Physics state refs to avoid React re-renders during 60fps physics loop
   const nodesRef = useRef([]);
   const linksRef = useRef([]);
   const transformRef = useRef({ x: 0, y: 0, k: 1 });
   
-  // React state for UI
   const [initialized, setInitialized] = useState(false);
   const [selectedNode, setSelectedNode] = useState(null);
   const [hoveredNode, setHoveredNode] = useState(null);
   const [dragState, setDragState] = useState({ isPanning: false, isDraggingNode: false, startX: 0, startY: 0, node: null });
-  // Used to force a render of the graph elements initially
   const [nodesRender, setNodesRender] = useState([]);
   const [linksRender, setLinksRender] = useState([]);
 
-  // 1. Flatten Data & Initialize Positions
   useEffect(() => {
     const w = window.innerWidth;
     const h = window.innerHeight;
     let n = [];
     let l = [];
 
-    // Root
     n.push({ id: 'root', label: 'HRM', type: 'root', x: w/2, y: h/2, vx: 0, vy: 0, radius: 24, mass: 10 });
 
     data.forEach((u, uIdx) => {
@@ -478,7 +478,6 @@ const ObsidianGraphView = ({ data, onUpdateAnswer, isAdmin, onRequestLogin }) =>
       });
     });
 
-    // Map string references to actual object references for links
     l.forEach(link => {
       link.sourceObj = n.find(node => node.id === link.source);
       link.targetObj = n.find(node => node.id === link.target);
@@ -486,8 +485,6 @@ const ObsidianGraphView = ({ data, onUpdateAnswer, isAdmin, onRequestLogin }) =>
 
     nodesRef.current = n;
     linksRef.current = l;
-    
-    // Center the view initially
     transformRef.current = { x: 0, y: 0, k: 0.8 };
     
     setNodesRender([...n]);
@@ -495,9 +492,8 @@ const ObsidianGraphView = ({ data, onUpdateAnswer, isAdmin, onRequestLogin }) =>
     setInitialized(true);
     
     return () => cancelAnimationFrame(animationRef.current);
-  }, []); // Only rebuild graph structure on initial mount
+  }, []);
 
-  // Sync data updates (like fullAnswer edits) into the physics nodes without resetting positions
   useEffect(() => {
     if (!initialized) return;
     data.forEach((u, uIdx) => {
@@ -505,18 +501,16 @@ const ObsidianGraphView = ({ data, onUpdateAnswer, isAdmin, onRequestLogin }) =>
         s.questions.forEach((q, qIdx) => {
           let qId = `q_${uIdx}_${sIdx}_${qIdx}`;
           let node = nodesRef.current.find(n => n.id === qId);
-          if (node) node.qData = q; // update reference to include new answers
+          if (node) node.qData = q;
         });
       });
     });
-    // Force re-render if selected node was updated
     if (selectedNode && selectedNode.type === 'question') {
       const updatedNode = nodesRef.current.find(n => n.id === selectedNode.id);
       setSelectedNode({...updatedNode}); 
     }
   }, [data, initialized]);
 
-  // 2. Physics Loop
   useLayoutEffect(() => {
     if (!initialized) return;
 
@@ -527,10 +521,8 @@ const ObsidianGraphView = ({ data, onUpdateAnswer, isAdmin, onRequestLogin }) =>
       const ATTRACTION = 0.03;
       const DAMPING = 0.85;
 
-      // Reset forces
       nodes.forEach(n => { n.fx = 0; n.fy = 0; });
 
-      // Repulsion (Coulomb) - optimized O(n^2)
       for (let i = 0; i < nodes.length; i++) {
         for (let j = i + 1; j < nodes.length; j++) {
           let dx = nodes[i].x - nodes[j].x;
@@ -538,7 +530,6 @@ const ObsidianGraphView = ({ data, onUpdateAnswer, isAdmin, onRequestLogin }) =>
           let distSq = dx * dx + dy * dy;
           if (distSq === 0) distSq = 1;
           
-          // Add a max distance for repulsion to optimize and prevent exploding
           if (distSq < 90000) { 
             let force = REPULSION / distSq;
             let fx = (dx / Math.sqrt(distSq)) * force;
@@ -550,7 +541,6 @@ const ObsidianGraphView = ({ data, onUpdateAnswer, isAdmin, onRequestLogin }) =>
         }
       }
 
-      // Attraction (Hooke's Springs)
       links.forEach(l => {
         let dx = l.targetObj.x - l.sourceObj.x;
         let dy = l.targetObj.y - l.sourceObj.y;
@@ -565,7 +555,6 @@ const ObsidianGraphView = ({ data, onUpdateAnswer, isAdmin, onRequestLogin }) =>
         l.targetObj.fx -= fx; l.targetObj.fy -= fy;
       });
 
-      // Center Gravity
       const cx = window.innerWidth / 2;
       const cy = window.innerHeight / 2;
       nodes.forEach(n => {
@@ -573,7 +562,6 @@ const ObsidianGraphView = ({ data, onUpdateAnswer, isAdmin, onRequestLogin }) =>
         n.fy += (cy - n.y) * 0.005;
       });
 
-      // Apply forces and update DOM elements directly for 60fps
       nodes.forEach(n => {
         if (!n.isDragging) {
           n.vx = (n.vx + n.fx / n.mass) * DAMPING;
@@ -582,14 +570,10 @@ const ObsidianGraphView = ({ data, onUpdateAnswer, isAdmin, onRequestLogin }) =>
           n.y += n.vy;
         }
         
-        // Directly update DOM to avoid React render cycle overhead
         const el = document.getElementById(`node-${n.id}`);
-        if (el) {
-          el.style.transform = `translate(${n.x}px, ${n.y}px)`;
-        }
+        if (el) el.style.transform = `translate(${n.x}px, ${n.y}px)`;
       });
 
-      // Update Link SVG DOM
       links.forEach(l => {
         const el = document.getElementById(`link-${l.source}-${l.target}`);
         if (el) {
@@ -600,7 +584,6 @@ const ObsidianGraphView = ({ data, onUpdateAnswer, isAdmin, onRequestLogin }) =>
         }
       });
       
-      // Update Wrapper Transform DOM
       const wrap = document.getElementById('graph-pan-wrapper');
       if (wrap) {
         wrap.style.transform = `translate(${transformRef.current.x}px, ${transformRef.current.y}px) scale(${transformRef.current.k})`;
@@ -613,7 +596,6 @@ const ObsidianGraphView = ({ data, onUpdateAnswer, isAdmin, onRequestLogin }) =>
     return () => cancelAnimationFrame(animationRef.current);
   }, [initialized]);
 
-  // 3. Interactions (Pan, Zoom, Drag Node)
   const handleWheel = (e) => {
     e.preventDefault();
     const scaleBy = 1.1;
@@ -622,7 +604,7 @@ const ObsidianGraphView = ({ data, onUpdateAnswer, isAdmin, onRequestLogin }) =>
   };
 
   const handlePointerDown = (e, node) => {
-    e.stopPropagation(); // Don't trigger background pan
+    e.stopPropagation(); 
     if (node) {
       node.isDragging = true;
       setDragState({ isPanning: false, isDraggingNode: true, node });
@@ -637,19 +619,15 @@ const ObsidianGraphView = ({ data, onUpdateAnswer, isAdmin, onRequestLogin }) =>
       transformRef.current.x = e.clientX - dragState.startX;
       transformRef.current.y = e.clientY - dragState.startY;
     } else if (dragState.isDraggingNode && dragState.node) {
-      // Convert screen coords to world coords taking pan/zoom into account
       const n = dragState.node;
       n.x = (e.clientX - transformRef.current.x) / transformRef.current.k;
       n.y = (e.clientY - transformRef.current.y) / transformRef.current.k;
-      // Reset velocity so it doesn't fly away after release
       n.vx = 0; n.vy = 0;
     }
   };
 
   const handlePointerUp = () => {
-    if (dragState.node) {
-      dragState.node.isDragging = false;
-    }
+    if (dragState.node) dragState.node.isDragging = false;
     setDragState({ isPanning: false, isDraggingNode: false, node: null });
   };
   
@@ -657,13 +635,11 @@ const ObsidianGraphView = ({ data, onUpdateAnswer, isAdmin, onRequestLogin }) =>
     transformRef.current = { x: 0, y: 0, k: 0.8 };
   };
 
-  // 4. Render Helpers
   const getNodeColor = (n) => {
     if (n.type === 'root') return 'bg-purple-600 shadow-[0_0_15px_rgba(147,51,234,0.7)]';
     if (n.type === 'unit') return 'bg-blue-500 border-2 border-blue-300';
     if (n.type === 'subtopic') return 'bg-teal-400';
     if (n.type === 'question') {
-      // Obsidian-like: turn yellow if there's a custom note!
       return n.qData?.fullAnswer ? 'bg-yellow-400 shadow-[0_0_8px_rgba(250,204,21,0.6)]' : 'bg-gray-400';
     }
     return 'bg-white';
@@ -678,23 +654,19 @@ const ObsidianGraphView = ({ data, onUpdateAnswer, isAdmin, onRequestLogin }) =>
       onPointerUp={handlePointerUp}
       onPointerLeave={handlePointerUp}
     >
-      {/* GRAPH CANVAS */}
       <div id="graph-pan-wrapper" className="absolute top-0 left-0 w-full h-full transform-origin-top-left will-change-transform">
-        
-        {/* LINKS (SVG Layer) */}
         <svg className="absolute top-0 left-0 w-full h-full overflow-visible pointer-events-none">
           {linksRender.map(l => (
             <line 
               key={`link-${l.source}-${l.target}`}
               id={`link-${l.source}-${l.target}`}
-              stroke="#374151" // gray-700
+              stroke="#374151"
               strokeWidth={l.sourceObj?.type === 'root' ? 3 : l.sourceObj?.type === 'unit' ? 2 : 1}
               opacity={l.sourceObj?.type === 'subtopic' ? 0.4 : 0.8}
             />
           ))}
         </svg>
 
-        {/* NODES (DOM Layer) */}
         {nodesRender.map(n => {
           const isSelected = selectedNode?.id === n.id;
           const isHovered = hoveredNode?.id === n.id;
@@ -705,9 +677,7 @@ const ObsidianGraphView = ({ data, onUpdateAnswer, isAdmin, onRequestLogin }) =>
               id={`node-${n.id}`}
               className="absolute top-0 left-0 pointer-events-auto will-change-transform"
               style={{ 
-                 // Initial position so they don't pop in at 0,0
                  transform: `translate(${n.x}px, ${n.y}px)`,
-                 // Center the node correctly
                  marginTop: -n.radius, 
                  marginLeft: -n.radius,
                  width: n.radius * 2,
@@ -718,10 +688,8 @@ const ObsidianGraphView = ({ data, onUpdateAnswer, isAdmin, onRequestLogin }) =>
               onMouseEnter={() => setHoveredNode(n)}
               onMouseLeave={() => setHoveredNode(null)}
             >
-              {/* The Dot */}
               <div className={`w-full h-full rounded-full transition-colors ${getNodeColor(n)} ${isSelected ? 'ring-4 ring-white' : ''}`} />
               
-              {/* Text Label */}
               {(n.type !== 'question' || isSelected || isHovered) && (
                 <div 
                   className={`absolute left-full top-1/2 -translate-y-1/2 ml-2 pointer-events-none whitespace-nowrap 
@@ -738,7 +706,6 @@ const ObsidianGraphView = ({ data, onUpdateAnswer, isAdmin, onRequestLogin }) =>
         })}
       </div>
 
-      {/* GRAPH CONTROLS (Bottom Left) */}
       <div className="absolute bottom-6 left-6 flex gap-2 z-20">
         <button onClick={() => { transformRef.current.k *= 1.2; }} className="bg-gray-800 text-gray-300 p-2 rounded-full hover:bg-gray-700 shadow-lg border border-gray-700">
           <ZoomIn className="w-5 h-5" />
@@ -751,18 +718,16 @@ const ObsidianGraphView = ({ data, onUpdateAnswer, isAdmin, onRequestLogin }) =>
         </button>
       </div>
       
-      {/* OBSIDIAN HELPER TEXT */}
       <div className="absolute top-6 left-6 pointer-events-none z-20 text-gray-400 text-sm">
         <p>• Drag background to pan</p>
         <p>• Scroll to zoom</p>
         <p className="text-yellow-500 font-medium">• Yellow dots contain your notes</p>
       </div>
 
-      {/* SIDEBAR PANEL FOR SELECTED NODE */}
       {selectedNode && selectedNode.type === 'question' && (
         <div 
           className="absolute top-0 right-0 h-full w-full max-w-sm bg-white shadow-[-10px_0_30px_rgba(0,0,0,0.5)] border-l border-gray-200 z-30 flex flex-col animate-in slide-in-from-right-8 duration-300"
-          onPointerDown={(e) => e.stopPropagation()} // Prevent clicking sidebar from panning graph
+          onPointerDown={(e) => e.stopPropagation()}
         >
           <div className="flex justify-between items-center p-4 border-b border-gray-100 bg-gray-50">
             <h3 className="font-bold text-gray-800 text-sm flex items-center gap-2">
@@ -781,12 +746,11 @@ const ObsidianGraphView = ({ data, onUpdateAnswer, isAdmin, onRequestLogin }) =>
                 subIdx={selectedNode.sIdx} 
                 qIdx={selectedNode.qIdx} 
                 onUpdate={onUpdateAnswer} 
-                isExpandedInit={true} // Always expanded in sidebar
+                isExpandedInit={true}
                 isAdmin={isAdmin}
                 onRequestLogin={onRequestLogin}
              />
              
-             {/* Add search links in sidebar too! */}
              <div className="mt-6">
                 <p className="text-xs font-semibold text-gray-400 mb-2 uppercase tracking-wide">External Resources</p>
                 <SubtopicLinks query={selectedNode.label} />
@@ -798,74 +762,93 @@ const ObsidianGraphView = ({ data, onUpdateAnswer, isAdmin, onRequestLogin }) =>
   );
 };
 
-// --- MAIN APP ---
 export default function App() {
-  const [activeTab, setActiveTab] = useState('read'); // Default to read notes view
-  
+  const [activeTab, setActiveTab] = useState('read'); // Landing Page is firmly Read Notes
   const [data, setData] = useState(() => JSON.parse(JSON.stringify(initialHrmData)));
   const [user, setUser] = useState(null);
 
   const [isAdmin, setIsAdmin] = useState(false);
   const [showLoginModal, setShowLoginModal] = useState(false);
 
-  // 1. Initialize Secure Authentication
+  // Authentication Setup
   useEffect(() => {
+    if (!auth) return;
     const initAuth = async () => {
-      if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-        await signInWithCustomToken(auth, __initial_auth_token);
-      } else {
-        await signInAnonymously(auth);
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (err) {
+        console.error("Authentication error (running without cloud auth):", err);
       }
     };
     initAuth();
-    const unsubscribe = onAuthStateChanged(auth, setUser);
+    
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+    });
     return () => unsubscribe();
   }, []);
 
-  // 2. Real-time Cloud Sync Listener
+  // Robust Cloud Sync with LocalStorage Fallback
   useEffect(() => {
-    if (!user) return; // Wait until secure auth is complete
-    
-    // Connects to a private, user-specific cloud folder for this exact app
+    // 1. If there's no secure cloud connection, fall back strictly to local storage
+    if (!user || !db) {
+      const localData = localStorage.getItem('hrmData');
+      if (localData) {
+        try { setData(JSON.parse(localData)); } catch(e) {}
+      }
+      return;
+    }
+
+    // 2. If Cloud IS available, sync continuously
     const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'notes', 'main');
-    
-    // onSnapshot automatically downloads the latest notes whenever they change
     const unsubscribe = onSnapshot(docRef, (docSnap) => {
-      if (docSnap.exists()) {
+      if (docSnap.exists() && docSnap.data().hrmData) {
         setData(docSnap.data().hrmData);
       }
     }, (error) => {
-      console.error("Cloud sync error:", error);
+      console.warn("Cloud connection interrupted. Falling back to local cache.", error);
+      const localData = localStorage.getItem('hrmData');
+      if (localData) {
+        try { setData(JSON.parse(localData)); } catch(e) {}
+      }
     });
-    
+
     return () => unsubscribe();
   }, [user]);
 
   const handleUpdateAnswer = (uIdx, sIdx, qIdx, fullAnswer) => {
     setData(prevData => {
-      // Create a strict deep copy
+      // Create strict deep copy
       const newData = [...prevData];
       const newUnit = { ...newData[uIdx] };
       const newSubtopics = [...newUnit.subtopics];
       const newSub = { ...newSubtopics[sIdx] };
       const newQuestions = [...newSub.questions];
       
-      // Update the target question
+      // Inject updated markdown text
       newQuestions[qIdx] = {
         ...newQuestions[qIdx],
         fullAnswer
       };
       
-      // Re-assemble the nested structure
       newSub.questions = newQuestions;
       newSubtopics[sIdx] = newSub;
       newUnit.subtopics = newSubtopics;
       newData[uIdx] = newUnit;
       
-      // Instantly beam the new data up to the secure cloud!
-      if (user) {
+      // Always save to Local Storage (safety net)
+      localStorage.setItem('hrmData', JSON.stringify(newData));
+
+      // Attempt to push to Cloud
+      if (user && db) {
         const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'notes', 'main');
-        setDoc(docRef, { hrmData: newData }).catch(err => console.error("Error saving to cloud:", err));
+        setDoc(docRef, { hrmData: newData }).catch(err => {
+          console.warn("Could not save to cloud, but saved locally.", err);
+        });
       }
       
       return newData;
@@ -896,7 +879,6 @@ export default function App() {
         }} 
       />
 
-      {/* Bottom Navigation */}
       <nav className="fixed bottom-0 w-full bg-white border-t border-gray-200 pb-safe shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)] z-40">
         <div className="flex justify-around items-center h-16 max-w-md mx-auto">
           <button 
