@@ -385,7 +385,7 @@ const QuestionContent = ({ q, unitIdx, subIdx, qIdx, onUpdate, isExpandedInit = 
     </div>
   );
 };
-
+// --- READ VIEW ---
 const ReadView = ({ data, onUpdateAnswer, isAdmin, onRequestLogin }) => {
   const [openUnit, setOpenUnit] = useState(0);
 
@@ -426,74 +426,78 @@ const ReadView = ({ data, onUpdateAnswer, isAdmin, onRequestLogin }) => {
   );
 };
 
+// --- OBSIDIAN GRAPH VIEW (CANVAS REWRITE FOR MAXIMUM PERFORMANCE) ---
 const ObsidianGraphView = ({ data, onUpdateAnswer, isAdmin, onRequestLogin }) => {
-  const containerRef = useRef(null);
+  const canvasRef = useRef(null);
   const animationRef = useRef(null);
   
+  // Physics state refs
   const nodesRef = useRef([]);
   const linksRef = useRef([]);
-  const transformRef = useRef({ x: 0, y: 0, k: 1 });
-  
+  const transformRef = useRef({ x: 0, y: 0, k: 0.8 });
+  const mouseRef = useRef({ x: 0, y: 0, isDown: false, mode: 'none', startX: 0, startY: 0 });
+  const draggedNodeRef = useRef(null);
+  const hoveredNodeRef = useRef(null);
+
+  // React state (only for overlay UI)
   const [initialized, setInitialized] = useState(false);
   const [selectedNode, setSelectedNode] = useState(null);
-  const [hoveredNode, setHoveredNode] = useState(null);
-  const [dragState, setDragState] = useState({ isPanning: false, isDraggingNode: false, startX: 0, startY: 0, node: null });
-  const [nodesRender, setNodesRender] = useState([]);
-  const [linksRender, setLinksRender] = useState([]);
 
+  // 1. Flatten Data & Initialize Positions
   useEffect(() => {
     const w = window.innerWidth;
     const h = window.innerHeight;
     let n = [];
     let l = [];
 
+    // Root
     n.push({ id: 'root', label: 'HRM', type: 'root', x: w/2, y: h/2, vx: 0, vy: 0, radius: 24, mass: 10 });
 
     data.forEach((u, uIdx) => {
       let uId = `u_${uIdx}`;
-      n.push({ id: uId, label: u.unit.split(':')[0], fullLabel: u.unit, type: 'unit', x: w/2 + (Math.random()-0.5)*100, y: h/2 + (Math.random()-0.5)*100, vx: 0, vy: 0, radius: 16, mass: 5 });
+      n.push({ id: uId, label: u.unit.split(':')[0], fullLabel: u.unit, type: 'unit', x: w/2 + (Math.random()-0.5)*200, y: h/2 + (Math.random()-0.5)*200, vx: 0, vy: 0, radius: 16, mass: 5 });
       l.push({ source: 'root', target: uId, distance: 160 });
 
       u.subtopics.forEach((s, sIdx) => {
         let sId = `s_${uIdx}_${sIdx}`;
-        n.push({ id: sId, label: s.title, type: 'subtopic', x: w/2 + (Math.random()-0.5)*300, y: h/2 + (Math.random()-0.5)*300, vx: 0, vy: 0, radius: 10, mass: 2 });
+        n.push({ id: sId, label: s.title, type: 'subtopic', x: w/2 + (Math.random()-0.5)*400, y: h/2 + (Math.random()-0.5)*400, vx: 0, vy: 0, radius: 10, mass: 2 });
         l.push({ source: uId, target: sId, distance: 100 });
 
         s.questions.forEach((q, qIdx) => {
           let qId = `q_${uIdx}_${sIdx}_${qIdx}`;
           n.push({ 
-            id: qId, 
-            label: q.q, 
-            type: 'question', 
-            qData: q, 
-            uIdx, sIdx, qIdx, 
-            x: w/2 + (Math.random()-0.5)*500, 
-            y: h/2 + (Math.random()-0.5)*500, 
-            vx: 0, vy: 0, 
-            radius: 6, 
-            mass: 1 
+            id: qId, label: q.q, type: 'question', qData: q, uIdx, sIdx, qIdx, 
+            x: w/2 + (Math.random()-0.5)*600, y: h/2 + (Math.random()-0.5)*600, vx: 0, vy: 0, radius: 6, mass: 1 
           });
           l.push({ source: sId, target: qId, distance: 50 });
         });
       });
     });
 
+    // Map string references to actual object references for links
     l.forEach(link => {
       link.sourceObj = n.find(node => node.id === link.source);
       link.targetObj = n.find(node => node.id === link.target);
     });
 
+    // Sort nodes so smaller nodes are drawn on top
+    n.sort((a, b) => b.radius - a.radius);
+
     nodesRef.current = n;
     linksRef.current = l;
-    transformRef.current = { x: 0, y: 0, k: 0.8 };
     
-    setNodesRender([...n]);
-    setLinksRender([...l]);
+    // Center the view initially
+    const container = canvasRef.current.parentElement;
+    const cw = container.clientWidth;
+    const ch = container.clientHeight;
+    transformRef.current = { x: cw/2 - (w/2)*0.8, y: ch/2 - (h/2)*0.8, k: 0.8 };
+    
     setInitialized(true);
     
     return () => cancelAnimationFrame(animationRef.current);
   }, []);
 
+  // Sync data updates (like fullAnswer edits)
   useEffect(() => {
     if (!initialized) return;
     data.forEach((u, uIdx) => {
@@ -501,7 +505,7 @@ const ObsidianGraphView = ({ data, onUpdateAnswer, isAdmin, onRequestLogin }) =>
         s.questions.forEach((q, qIdx) => {
           let qId = `q_${uIdx}_${sIdx}_${qIdx}`;
           let node = nodesRef.current.find(n => n.id === qId);
-          if (node) node.qData = q;
+          if (node) node.qData = q; 
         });
       });
     });
@@ -511,18 +515,38 @@ const ObsidianGraphView = ({ data, onUpdateAnswer, isAdmin, onRequestLogin }) =>
     }
   }, [data, initialized]);
 
+  // 2. High-Performance Canvas Render Loop
   useLayoutEffect(() => {
-    if (!initialized) return;
+    if (!initialized || !canvasRef.current) return;
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d', { alpha: false }); // Optimize for opaque background
+
+    const resizeCanvas = () => {
+      const dpr = window.devicePixelRatio || 1;
+      const rect = canvas.parentElement.getBoundingClientRect();
+      canvas.width = rect.width * dpr;
+      canvas.height = rect.height * dpr;
+      ctx.scale(dpr, dpr);
+      canvas.style.width = `${rect.width}px`;
+      canvas.style.height = `${rect.height}px`;
+    };
+    
+    resizeCanvas();
+    window.addEventListener('resize', resizeCanvas);
 
     const tick = () => {
       const nodes = nodesRef.current;
       const links = linksRef.current;
+      const transform = transformRef.current;
+      
       const REPULSION = 2500;
       const ATTRACTION = 0.03;
       const DAMPING = 0.85;
 
+      // --- 1. PHYSICS ---
       nodes.forEach(n => { n.fx = 0; n.fy = 0; });
 
+      // Repulsion (optimized spatial check)
       for (let i = 0; i < nodes.length; i++) {
         for (let j = i + 1; j < nodes.length; j++) {
           let dx = nodes[i].x - nodes[j].x;
@@ -534,13 +558,13 @@ const ObsidianGraphView = ({ data, onUpdateAnswer, isAdmin, onRequestLogin }) =>
             let force = REPULSION / distSq;
             let fx = (dx / Math.sqrt(distSq)) * force;
             let fy = (dy / Math.sqrt(distSq)) * force;
-            
             nodes[i].fx += fx; nodes[i].fy += fy;
             nodes[j].fx -= fx; nodes[j].fy -= fy;
           }
         }
       }
 
+      // Attraction
       links.forEach(l => {
         let dx = l.targetObj.x - l.sourceObj.x;
         let dy = l.targetObj.y - l.sourceObj.y;
@@ -550,11 +574,11 @@ const ObsidianGraphView = ({ data, onUpdateAnswer, isAdmin, onRequestLogin }) =>
         let force = (dist - l.distance) * ATTRACTION;
         let fx = (dx / dist) * force;
         let fy = (dy / dist) * force;
-        
         l.sourceObj.fx += fx; l.sourceObj.fy += fy;
         l.targetObj.fx -= fx; l.targetObj.fy -= fy;
       });
 
+      // Center Gravity
       const cx = window.innerWidth / 2;
       const cy = window.innerHeight / 2;
       nodes.forEach(n => {
@@ -562,150 +586,219 @@ const ObsidianGraphView = ({ data, onUpdateAnswer, isAdmin, onRequestLogin }) =>
         n.fy += (cy - n.y) * 0.005;
       });
 
+      // Apply Forces
       nodes.forEach(n => {
-        if (!n.isDragging) {
+        if (n !== draggedNodeRef.current) {
           n.vx = (n.vx + n.fx / n.mass) * DAMPING;
           n.vy = (n.vy + n.fy / n.mass) * DAMPING;
           n.x += n.vx;
           n.y += n.vy;
         }
-        
-        const el = document.getElementById(`node-${n.id}`);
-        if (el) el.style.transform = `translate(${n.x}px, ${n.y}px)`;
       });
 
+      // --- 2. RENDER (CANVAS) ---
+      const rect = canvas.parentElement.getBoundingClientRect();
+      ctx.fillStyle = '#111827'; // gray-900 background
+      ctx.fillRect(0, 0, rect.width, rect.height);
+      
+      ctx.save();
+      ctx.translate(transform.x, transform.y);
+      ctx.scale(transform.k, transform.k);
+
+      // Draw Links
+      ctx.lineWidth = 1 / transform.k;
       links.forEach(l => {
-        const el = document.getElementById(`link-${l.source}-${l.target}`);
-        if (el) {
-          el.setAttribute('x1', l.sourceObj.x);
-          el.setAttribute('y1', l.sourceObj.y);
-          el.setAttribute('x2', l.targetObj.x);
-          el.setAttribute('y2', l.targetObj.y);
+        ctx.beginPath();
+        ctx.moveTo(l.sourceObj.x, l.sourceObj.y);
+        ctx.lineTo(l.targetObj.x, l.targetObj.y);
+        ctx.strokeStyle = '#374151'; // gray-700
+        
+        if (l.sourceObj.type === 'root') { ctx.lineWidth = 3 / transform.k; ctx.globalAlpha = 0.8; }
+        else if (l.sourceObj.type === 'unit') { ctx.lineWidth = 2 / transform.k; ctx.globalAlpha = 0.8; }
+        else { ctx.lineWidth = 1 / transform.k; ctx.globalAlpha = 0.4; }
+        
+        ctx.stroke();
+      });
+      ctx.globalAlpha = 1.0;
+
+      // Draw Nodes
+      nodes.forEach(n => {
+        ctx.beginPath();
+        ctx.arc(n.x, n.y, n.radius, 0, Math.PI * 2);
+        
+        if (n.type === 'root') {
+          ctx.fillStyle = '#9333ea';
+          ctx.shadowColor = 'rgba(147,51,234,0.7)';
+          ctx.shadowBlur = 15;
+        } else if (n.type === 'unit') {
+          ctx.fillStyle = '#3b82f6';
+          ctx.strokeStyle = '#93c5fd';
+          ctx.lineWidth = 2 / transform.k;
+          ctx.stroke();
+          ctx.shadowBlur = 0;
+        } else if (n.type === 'subtopic') {
+          ctx.fillStyle = '#2dd4bf';
+          ctx.shadowBlur = 0;
+        } else {
+          ctx.fillStyle = n.qData?.fullAnswer ? '#facc15' : '#9ca3af';
+          if (n.qData?.fullAnswer) {
+            ctx.shadowColor = 'rgba(250,204,21,0.6)';
+            ctx.shadowBlur = 8;
+          } else {
+            ctx.shadowBlur = 0;
+          }
+        }
+        ctx.fill();
+        ctx.shadowBlur = 0; // reset
+        
+        // Highlight Selected Node
+        if (selectedNode?.id === n.id) {
+          ctx.beginPath();
+          ctx.arc(n.x, n.y, n.radius + 4/transform.k, 0, Math.PI * 2);
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = 3 / transform.k;
+          ctx.stroke();
         }
       });
-      
-      const wrap = document.getElementById('graph-pan-wrapper');
-      if (wrap) {
-        wrap.style.transform = `translate(${transformRef.current.x}px, ${transformRef.current.y}px) scale(${transformRef.current.k})`;
-      }
 
+      // Draw Labels
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      nodes.forEach(n => {
+        const isSelected = selectedNode?.id === n.id;
+        const isHovered = hoveredNodeRef.current?.id === n.id;
+        
+        if (n.type !== 'question' || isSelected || isHovered) {
+          if (n.type === 'root') {
+            ctx.font = 'bold 20px sans-serif';
+            ctx.fillStyle = '#ffffff';
+          } else if (n.type === 'unit') {
+            ctx.font = 'bold 14px sans-serif';
+            ctx.fillStyle = '#e5e7eb';
+          } else {
+            ctx.font = `12px sans-serif`;
+            ctx.fillStyle = '#9ca3af';
+          }
+
+          // Dark background for small labels to improve readability over lines
+          if (n.type === 'question' || n.type === 'subtopic') {
+            const metrics = ctx.measureText(n.label);
+            const pad = 3;
+            ctx.fillStyle = 'rgba(17, 24, 39, 0.8)';
+            ctx.fillRect(n.x + n.radius + 6 - pad, n.y - 6 - pad, metrics.width + pad*2, 12 + pad*2);
+            ctx.fillStyle = '#9ca3af';
+          }
+          
+          ctx.fillText(n.label, n.x + n.radius + 6, n.y);
+        }
+      });
+
+      ctx.restore();
       animationRef.current = requestAnimationFrame(tick);
     };
 
     animationRef.current = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(animationRef.current);
-  }, [initialized]);
+    return () => {
+      cancelAnimationFrame(animationRef.current);
+      window.removeEventListener('resize', resizeCanvas);
+    };
+  }, [initialized, selectedNode]);
 
-  const handleWheel = (e) => {
-    e.preventDefault();
-    const scaleBy = 1.1;
-    const newK = e.deltaY < 0 ? transformRef.current.k * scaleBy : transformRef.current.k / scaleBy;
-    transformRef.current.k = Math.max(0.1, Math.min(newK, 4));
+  // 3. Interactions
+  const getPointerPos = (e) => {
+    const rect = canvasRef.current.getBoundingClientRect();
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
   };
 
-  const handlePointerDown = (e, node) => {
-    e.stopPropagation(); 
-    if (node) {
-      node.isDragging = true;
-      setDragState({ isPanning: false, isDraggingNode: true, node });
-      setSelectedNode(node);
+  const getHitNode = (x, y) => {
+    const worldX = (x - transformRef.current.x) / transformRef.current.k;
+    const worldY = (y - transformRef.current.y) / transformRef.current.k;
+    
+    // Reverse array to hit smallest (top-most) nodes first
+    for (let i = nodesRef.current.length - 1; i >= 0; i--) {
+      const n = nodesRef.current[i];
+      const dist = Math.hypot(n.x - worldX, n.y - worldY);
+      if (dist <= n.radius + (3 / transformRef.current.k)) return n; // Extra padding for tiny nodes
+    }
+    return null;
+  };
+
+  const handlePointerDown = (e) => {
+    const pos = getPointerPos(e);
+    const hit = getHitNode(pos.x, pos.y);
+    
+    if (hit) {
+      draggedNodeRef.current = hit;
+      mouseRef.current = { ...pos, isDown: true, mode: 'drag' };
+      setSelectedNode(hit);
     } else {
-      setDragState({ isPanning: true, isDraggingNode: false, startX: e.clientX - transformRef.current.x, startY: e.clientY - transformRef.current.y });
+      mouseRef.current = { ...pos, isDown: true, mode: 'pan', startX: pos.x - transformRef.current.x, startY: pos.y - transformRef.current.y };
     }
   };
 
   const handlePointerMove = (e) => {
-    if (dragState.isPanning) {
-      transformRef.current.x = e.clientX - dragState.startX;
-      transformRef.current.y = e.clientY - dragState.startY;
-    } else if (dragState.isDraggingNode && dragState.node) {
-      const n = dragState.node;
-      n.x = (e.clientX - transformRef.current.x) / transformRef.current.k;
-      n.y = (e.clientY - transformRef.current.y) / transformRef.current.k;
-      n.vx = 0; n.vy = 0;
+    const pos = getPointerPos(e);
+    const m = mouseRef.current;
+
+    // Handle Hover State mapping
+    const hit = getHitNode(pos.x, pos.y);
+    if (hit !== hoveredNodeRef.current) hoveredNodeRef.current = hit;
+    canvasRef.current.style.cursor = hit ? (m.isDown ? 'grabbing' : 'pointer') : (m.isDown ? 'grabbing' : 'grab');
+
+    if (!m.isDown) return;
+
+    if (m.mode === 'pan') {
+      transformRef.current.x = pos.x - m.startX;
+      transformRef.current.y = pos.y - m.startY;
+    } else if (m.mode === 'drag' && draggedNodeRef.current) {
+      draggedNodeRef.current.x = (pos.x - transformRef.current.x) / transformRef.current.k;
+      draggedNodeRef.current.y = (pos.y - transformRef.current.y) / transformRef.current.k;
+      draggedNodeRef.current.vx = 0; 
+      draggedNodeRef.current.vy = 0;
     }
   };
 
   const handlePointerUp = () => {
-    if (dragState.node) dragState.node.isDragging = false;
-    setDragState({ isPanning: false, isDraggingNode: false, node: null });
+    mouseRef.current.isDown = false;
+    draggedNodeRef.current = null;
+    canvasRef.current.style.cursor = hoveredNodeRef.current ? 'pointer' : 'grab';
+  };
+
+  const handleWheel = (e) => {
+    e.preventDefault();
+    const pos = getPointerPos(e);
+    
+    // Zoom around mouse cursor
+    const scaleBy = 1.1;
+    const newK = e.deltaY < 0 ? transformRef.current.k * scaleBy : transformRef.current.k / scaleBy;
+    const clampedK = Math.max(0.1, Math.min(newK, 4));
+    
+    const scaleRatio = clampedK / transformRef.current.k;
+    transformRef.current.x = pos.x - (pos.x - transformRef.current.x) * scaleRatio;
+    transformRef.current.y = pos.y - (pos.y - transformRef.current.y) * scaleRatio;
+    transformRef.current.k = clampedK;
   };
   
   const resetZoom = () => {
-    transformRef.current = { x: 0, y: 0, k: 0.8 };
-  };
-
-  const getNodeColor = (n) => {
-    if (n.type === 'root') return 'bg-purple-600 shadow-[0_0_15px_rgba(147,51,234,0.7)]';
-    if (n.type === 'unit') return 'bg-blue-500 border-2 border-blue-300';
-    if (n.type === 'subtopic') return 'bg-teal-400';
-    if (n.type === 'question') {
-      return n.qData?.fullAnswer ? 'bg-yellow-400 shadow-[0_0_8px_rgba(250,204,21,0.6)]' : 'bg-gray-400';
-    }
-    return 'bg-white';
+    const container = canvasRef.current.parentElement;
+    transformRef.current = { x: container.clientWidth/2 - (window.innerWidth/2)*0.8, y: container.clientHeight/2 - (window.innerHeight/2)*0.8, k: 0.8 };
   };
 
   return (
-    <div 
-      className="relative w-full h-[calc(100vh-140px)] bg-gray-900 overflow-hidden cursor-grab active:cursor-grabbing selection:bg-transparent"
-      onWheel={handleWheel}
-      onPointerDown={(e) => handlePointerDown(e, null)}
-      onPointerMove={handlePointerMove}
-      onPointerUp={handlePointerUp}
-      onPointerLeave={handlePointerUp}
-    >
-      <div id="graph-pan-wrapper" className="absolute top-0 left-0 w-full h-full transform-origin-top-left will-change-transform">
-        <svg className="absolute top-0 left-0 w-full h-full overflow-visible pointer-events-none">
-          {linksRender.map(l => (
-            <line 
-              key={`link-${l.source}-${l.target}`}
-              id={`link-${l.source}-${l.target}`}
-              stroke="#374151"
-              strokeWidth={l.sourceObj?.type === 'root' ? 3 : l.sourceObj?.type === 'unit' ? 2 : 1}
-              opacity={l.sourceObj?.type === 'subtopic' ? 0.4 : 0.8}
-            />
-          ))}
-        </svg>
+    <div className="relative w-full h-[calc(100vh-140px)] bg-gray-900 overflow-hidden selection:bg-transparent">
+      
+      {/* HIGH PERFORMANCE CANVAS */}
+      <canvas 
+        ref={canvasRef}
+        className="absolute top-0 left-0 w-full h-full touch-none"
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerLeave={handlePointerUp}
+        onWheel={handleWheel}
+      />
 
-        {nodesRender.map(n => {
-          const isSelected = selectedNode?.id === n.id;
-          const isHovered = hoveredNode?.id === n.id;
-          
-          return (
-            <div
-              key={n.id}
-              id={`node-${n.id}`}
-              className="absolute top-0 left-0 pointer-events-auto will-change-transform"
-              style={{ 
-                 transform: `translate(${n.x}px, ${n.y}px)`,
-                 marginTop: -n.radius, 
-                 marginLeft: -n.radius,
-                 width: n.radius * 2,
-                 height: n.radius * 2,
-                 zIndex: n.type === 'question' ? 10 : n.type === 'subtopic' ? 20 : 30
-              }}
-              onPointerDown={(e) => handlePointerDown(e, n)}
-              onMouseEnter={() => setHoveredNode(n)}
-              onMouseLeave={() => setHoveredNode(null)}
-            >
-              <div className={`w-full h-full rounded-full transition-colors ${getNodeColor(n)} ${isSelected ? 'ring-4 ring-white' : ''}`} />
-              
-              {(n.type !== 'question' || isSelected || isHovered) && (
-                <div 
-                  className={`absolute left-full top-1/2 -translate-y-1/2 ml-2 pointer-events-none whitespace-nowrap 
-                    ${n.type === 'root' ? 'text-xl font-bold text-white' : 
-                      n.type === 'unit' ? 'text-sm font-semibold text-gray-200' : 
-                      'text-xs text-gray-400 bg-gray-900/80 px-1.5 py-0.5 rounded'}`}
-                  style={{ zIndex: 100 }}
-                >
-                  {n.label}
-                </div>
-              )}
-            </div>
-          )
-        })}
-      </div>
-
+      {/* GRAPH CONTROLS */}
       <div className="absolute bottom-6 left-6 flex gap-2 z-20">
         <button onClick={() => { transformRef.current.k *= 1.2; }} className="bg-gray-800 text-gray-300 p-2 rounded-full hover:bg-gray-700 shadow-lg border border-gray-700">
           <ZoomIn className="w-5 h-5" />
@@ -724,10 +817,11 @@ const ObsidianGraphView = ({ data, onUpdateAnswer, isAdmin, onRequestLogin }) =>
         <p className="text-yellow-500 font-medium">• Yellow dots contain your notes</p>
       </div>
 
+      {/* SIDEBAR PANEL FOR SELECTED NODE */}
       {selectedNode && selectedNode.type === 'question' && (
         <div 
           className="absolute top-0 right-0 h-full w-full max-w-sm bg-white shadow-[-10px_0_30px_rgba(0,0,0,0.5)] border-l border-gray-200 z-30 flex flex-col animate-in slide-in-from-right-8 duration-300"
-          onPointerDown={(e) => e.stopPropagation()}
+          onPointerDown={(e) => e.stopPropagation()} 
         >
           <div className="flex justify-between items-center p-4 border-b border-gray-100 bg-gray-50">
             <h3 className="font-bold text-gray-800 text-sm flex items-center gap-2">
@@ -746,7 +840,7 @@ const ObsidianGraphView = ({ data, onUpdateAnswer, isAdmin, onRequestLogin }) =>
                 subIdx={selectedNode.sIdx} 
                 qIdx={selectedNode.qIdx} 
                 onUpdate={onUpdateAnswer} 
-                isExpandedInit={true}
+                isExpandedInit={true} 
                 isAdmin={isAdmin}
                 onRequestLogin={onRequestLogin}
              />
@@ -762,12 +856,14 @@ const ObsidianGraphView = ({ data, onUpdateAnswer, isAdmin, onRequestLogin }) =>
   );
 };
 
+// --- MAIN APP ---
 export default function App() {
   const [activeTab, setActiveTab] = useState('read'); // Landing Page is firmly Read Notes
   const [data, setData] = useState(() => JSON.parse(JSON.stringify(initialHrmData)));
   const [user, setUser] = useState(null);
 
-  const [isAdmin, setIsAdmin] = useState(false);
+  // Initialize admin state from localStorage so it survives page reloads
+  const [isAdmin, setIsAdmin] = useState(() => localStorage.getItem('hrmAdmin') === 'true');
   const [showLoginModal, setShowLoginModal] = useState(false);
 
   // Authentication Setup
@@ -804,7 +900,8 @@ export default function App() {
     }
 
     // 2. If Cloud IS available, sync continuously
-    const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'notes', 'main');
+    // Changed path to the 'public' folder so ALL devices see the same synced notes
+    const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'shared_notes', 'main_v1');
     const unsubscribe = onSnapshot(docRef, (docSnap) => {
       if (docSnap.exists() && docSnap.data().hrmData) {
         setData(docSnap.data().hrmData);
@@ -845,7 +942,8 @@ export default function App() {
 
       // Attempt to push to Cloud
       if (user && db) {
-        const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'notes', 'main');
+        // Push to the 'public' folder so ALL devices get the update
+        const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'shared_notes', 'main_v1');
         setDoc(docRef, { hrmData: newData }).catch(err => {
           console.warn("Could not save to cloud, but saved locally.", err);
         });
@@ -860,7 +958,10 @@ export default function App() {
       <Header 
         isAdmin={isAdmin} 
         onLoginClick={() => setShowLoginModal(true)} 
-        onLogout={() => setIsAdmin(false)} 
+        onLogout={() => {
+          setIsAdmin(false);
+          localStorage.removeItem('hrmAdmin');
+        }} 
       />
       
       <main>
@@ -875,6 +976,7 @@ export default function App() {
         onClose={() => setShowLoginModal(false)} 
         onSuccess={() => {
           setIsAdmin(true);
+          localStorage.setItem('hrmAdmin', 'true');
           setShowLoginModal(false);
         }} 
       />
