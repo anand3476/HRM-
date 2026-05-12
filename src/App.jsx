@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useLayoutEffect, useCallback } from 'react';
-import { Network, BookOpen, Search, Play, ExternalLink, ChevronDown, ChevronRight, BookMarked, GraduationCap, ChevronUp, Edit3, GitCommit, X, ZoomIn, ZoomOut, Maximize, Lock, Unlock, KeyRound } from 'lucide-react';
+import { Network, BookOpen, Search, Play, ExternalLink, ChevronDown, ChevronRight, BookMarked, GraduationCap, ChevronUp, Edit3, Save, X, ZoomIn, ZoomOut, Maximize, Lock, Unlock, KeyRound } from 'lucide-react';
 
 // --- DATA STRUCTURE ---
 const initialHrmData = [
@@ -165,8 +165,6 @@ const initialHrmData = [
   }
 ];
 
-// --- SHARED COMPONENTS ---
-
 const LoginModal = ({ isOpen, onClose, onSuccess }) => {
   const [pwd, setPwd] = useState('');
   const [error, setError] = useState('');
@@ -254,6 +252,43 @@ const SubtopicLinks = ({ query }) => {
   );
 }
 
+const MarkdownDisplay = ({ content }) => {
+  const getHtml = () => {
+    if (!content) return { __html: '' };
+    let html = content
+      // 1. Escape HTML to prevent XSS and malformed tags
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      // 2. Code blocks (multiline)
+      .replace(/```([\s\S]*?)```/gim, '<pre class="bg-gray-900 text-gray-100 p-3 rounded-md my-3 overflow-x-auto text-xs font-mono border border-gray-700 shadow-inner"><code>$1</code></pre>')
+      // 3. Headings
+      .replace(/^### (.*$)/gim, '<h3 class="text-lg font-bold text-gray-900 mt-4 mb-2">$1</h3>')
+      .replace(/^## (.*$)/gim, '<h2 class="text-xl font-bold text-gray-900 mt-5 mb-2 border-b border-gray-200 pb-1">$1</h2>')
+      .replace(/^# (.*$)/gim, '<h1 class="text-2xl font-bold text-indigo-900 mt-6 mb-3 border-b border-indigo-200 pb-2">$1</h1>')
+      // 4. Bold and Italic
+      .replace(/\*\*(.*?)\*\*/gim, '<strong class="font-bold text-gray-900">$1</strong>')
+      .replace(/\*(.*?)\*/gim, '<em class="italic text-gray-800">$1</em>')
+      // 5. Links
+      .replace(/\[([^\]]+)\]\(([^)]+)\)/gim, '<a href="$2" target="_blank" rel="noopener noreferrer" class="text-indigo-600 hover:text-indigo-800 underline decoration-indigo-300 underline-offset-2">$1</a>')
+      // 6. Inline Code
+      .replace(/`([^`]+)`/gim, '<code class="bg-gray-100 border border-gray-200 text-pink-600 px-1.5 py-0.5 rounded text-[13px] font-mono">$1</code>')
+      // 7. Blockquotes
+      .replace(/^\s*>\s+(.*)/gim, '<blockquote class="border-l-4 border-indigo-400 pl-3 py-1 my-2 bg-indigo-50/50 text-gray-700 italic rounded-r">$1</blockquote>')
+      // 8. Numbered Lists
+      .replace(/^\s*(\d+\.)\s+(.*)/gim, '<div class="flex items-start gap-2 my-1"><span class="font-bold text-gray-400 text-xs mt-0.5 shrink-0 select-none">$1</span><span class="flex-1">$2</span></div>')
+      // 9. Unordered Lists
+      .replace(/^\s*[-*]\s+(.*)/gim, '<div class="flex items-start gap-2 my-1"><span class="w-1.5 h-1.5 rounded-full bg-gray-400 mt-2 shrink-0"></span><span class="flex-1">$1</span></div>');
+    
+    return { __html: html };
+  };
+
+  return (
+    <div 
+      className="bg-white p-4 rounded-md border border-indigo-100 text-gray-800 text-sm shadow-sm leading-relaxed whitespace-pre-wrap markdown-content"
+      dangerouslySetInnerHTML={getHtml()}
+    />
+  );
+};
+
 // Reusable component for editing/viewing a single question
 const QuestionContent = ({ q, unitIdx, subIdx, qIdx, onUpdate, isExpandedInit = false, isAdmin, onRequestLogin }) => {
   const [isExpanded, setIsExpanded] = useState(isExpandedInit);
@@ -303,17 +338,15 @@ const QuestionContent = ({ q, unitIdx, subIdx, qIdx, onUpdate, isExpandedInit = 
                />
                <div className="flex justify-end gap-2">
                  <button onClick={() => setIsEditing(false)} className="px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-200 rounded-md transition-colors">Cancel</button>
-                 <button onClick={handleSave} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold bg-gray-900 text-white hover:bg-black rounded-md shadow-sm transition-colors">
-                   <GitCommit className="w-3.5 h-3.5" /> Git Update
+                 <button onClick={handleSave} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold bg-indigo-600 text-white hover:bg-indigo-700 rounded-md shadow-sm transition-colors">
+                   <Save className="w-3.5 h-3.5" /> Save Note
                  </button>
                </div>
              </div>
            ) : (
              <div className="space-y-3">
                {q.fullAnswer ? (
-                 <div className="bg-white p-3 rounded-md border border-indigo-100 whitespace-pre-wrap text-gray-800 text-sm shadow-sm leading-relaxed">
-                   {q.fullAnswer}
-                 </div>
+                 <MarkdownDisplay content={q.fullAnswer} />
                ) : (
                  <div className="bg-white p-3 rounded-md border border-dashed border-gray-300 text-center text-gray-500 text-xs italic">
                    No detailed notes added yet.
@@ -757,18 +790,51 @@ const ObsidianGraphView = ({ data, onUpdateAnswer, isAdmin, onRequestLogin }) =>
 
 // --- MAIN APP ---
 export default function App() {
-  const [activeTab, setActiveTab] = useState('mindmap'); // Default to awesome mindmap now
-  const [data, setData] = useState(initialHrmData);
+  const [activeTab, setActiveTab] = useState('read'); // Default to read notes view
+  
+  const [data, setData] = useState(() => {
+    const savedData = localStorage.getItem('hrmPrepNotes');
+    if (savedData) {
+      try {
+        return JSON.parse(savedData);
+      } catch (e) {
+        console.error("Error loading saved notes", e);
+      }
+    }
+    // Deep clone initial data so we never accidentally mutate the global constant
+    return JSON.parse(JSON.stringify(initialHrmData));
+  });
+
   const [isAdmin, setIsAdmin] = useState(false);
   const [showLoginModal, setShowLoginModal] = useState(false);
 
+  useEffect(() => {
+    localStorage.setItem('hrmPrepNotes', JSON.stringify(data));
+  }, [data]);
+
   const handleUpdateAnswer = (uIdx, sIdx, qIdx, fullAnswer) => {
-    const newData = [...data];
-    newData[uIdx].subtopics[sIdx].questions[qIdx] = {
-      ...newData[uIdx].subtopics[sIdx].questions[qIdx],
-      fullAnswer
-    };
-    setData(newData);
+    setData(prevData => {
+      // Create a strict deep copy of the path down to the specific question
+      const newData = [...prevData];
+      const newUnit = { ...newData[uIdx] };
+      const newSubtopics = [...newUnit.subtopics];
+      const newSub = { ...newSubtopics[sIdx] };
+      const newQuestions = [...newSub.questions];
+      
+      // Update the target question
+      newQuestions[qIdx] = {
+        ...newQuestions[qIdx],
+        fullAnswer
+      };
+      
+      // Re-assemble the nested structure
+      newSub.questions = newQuestions;
+      newSubtopics[sIdx] = newSub;
+      newUnit.subtopics = newSubtopics;
+      newData[uIdx] = newUnit;
+      
+      return newData;
+    });
   };
 
   return (
