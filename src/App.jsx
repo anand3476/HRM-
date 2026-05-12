@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useLayoutEffect, useCallback } from 'react';
-import { Network, BookOpen, Search, Youtube, ExternalLink, ChevronDown, ChevronRight, BookMarked, GraduationCap, ChevronUp, Edit3, GitCommit, X, ZoomIn, ZoomOut, Maximize, Lock, Unlock, KeyRound } from 'lucide-react';
+import { Network, BookOpen, Search, Play, ExternalLink, ChevronDown, ChevronRight, BookMarked, GraduationCap, ChevronUp, Edit3, GitCommit, X, ZoomIn, ZoomOut, Maximize, Lock, Unlock, KeyRound } from 'lucide-react';
 
 // --- DATA STRUCTURE ---
 const initialHrmData = [
@@ -241,7 +241,7 @@ const SubtopicLinks = ({ query }) => {
         target="_blank" rel="noopener noreferrer"
         className="flex items-center gap-1.5 bg-red-50 text-red-600 px-3 py-1.5 rounded-full text-xs font-medium hover:bg-red-100 transition-colors flex-1 justify-center"
       >
-        <Youtube className="w-3.5 h-3.5" /> Watch Lectures
+        <Play className="w-3.5 h-3.5" /> Watch Lectures
       </a>
       <a 
         href={`https://www.google.com/search?q=${encodedQuery}`}
